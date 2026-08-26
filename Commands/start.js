@@ -110,7 +110,7 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
     } else {
       // If no payload, send the welcome message with inline buttons
       await bot.sendPhoto(msg.chat.id, START_IMAGE_URL, {
-        caption: `Hello, ${firstName}! 👋\n\nWelcome to the bot. Here you can upload files or create batches of files to share later.\n\nJust Send Me Any File and Get Share link:`,
+        caption: `Hello, ${firstName}! 👋\n\nWelcome to the Sensei Era.\n\nIm Sensei File Store Robot.\n\n Here you can Get All Lectures who Shared By @PW_SENSEI.:`,
         reply_markup: {
           inline_keyboard: [
             [
@@ -118,10 +118,10 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
               { text: "About", callback_data: "about" },
             ],
             [
-              { text: "Developer Info", callback_data: "OwnerInfo" },
+              { text: "👨‍💻 Cʀᴇᴀᴛᴏʀ", callback_data: "OwnerInfo" },
               { text: "Legal Disclaimer", callback_data: "legal" },
             ],
-            [{ text: "Update Channel", url: "https://t.me/TeamCinderella" }],
+            [{ text: "Update Channel", url: "https://t.me/PW_SENSEI" }],
           ],
         },
       });
@@ -135,14 +135,14 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
   
   <b>📱 Tɢ Uѕᴇʀɴᴀᴍᴇ:</b> <b>@SmartBoy_ApnaMS</b> 
   
-  <b>🌐 Channel:</b> <b><a href="https://t.me/TeamCinderella">Team Cindrella</a></b> 
+  <b>🌐 Channel:</b> <b><a href="https://t.me/PW_SENSEI">PW SENSEI</a></b> 
   
   <b>✨ Cᴏɴnᴇᴄᴛ tᴏ mᴏʀᴇ cʀᴇᴀᴛɪvᴇ jᴏᴜʀɴᴇʏ✨</b> 
   `;
   const help = `
   <b>> Help Menu</b>
   
-  I am a permanent file store bot. you can store files from your public channel without i am admin in there.
+  Im Sensei File Store Robot.
       
   <b>> Available Commands:</b>
   ~ /start - check i am alive.
@@ -157,8 +157,8 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
   <blockquote><b>👑 Owner: <a href='https://t.me/Mr_Toxic_1'>Owner 👑</a></b></blockquote>
   <blockquote><b>💜 Supporter: <a href='https://t.me/Lapata_786'>Sistu 💜</a></b></blockquote>
   <blockquote><b>🤝 Brother: <a href='https://t.me/Mk_khan001'>MK Bro</a></b></blockquote>
-  <blockquote><b>💾 Bᴏᴛ Sᴇʀᴠᴇʀ: <a href='https://render.com'>Render😁</a></b></blockquote>
-  <blockquote><b>🚀 Official Channel: <a href='https://t.me/Toxic_Official_1'>Toxic official</a></b></blockquote>
+  <blockquote><b>💾 Bᴏᴛ Sᴇʀᴠᴇʀ: <a href='https://vercel.com'>Vercel 😁</a></b></blockquote>
+  <blockquote><b>🚀 Official Channel: <a href='https://t.me/PW_SENSEI'>PW SENSEI⚡</a></b></blockquote>
   `;
 
   const legalText = `
@@ -167,17 +167,17 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
   This bot is created solely for <b>educational</b> and <b>personal file storage</b> purposes.
   
   📁 You may use this bot to:
-  - Store and retrieve your own documents, videos, or media files.
+  - Store and retrieve Sensei own documents, videos.
   - Share educational content with others using secure file links.
   
   🚫 <b>Prohibited Uses:</b>
   - Uploading or sharing copyrighted, illegal, or harmful content.
   - Using the bot for piracy, harassment, or spreading misinformation.
   
-  🛡️ By using this bot, you agree to take full responsibility for the content you upload. The developer is not liable for any misuse.
+  🛡️ By using this bot, you agree to take full responsibility for the content you Watch. The developer is not liable for any misuse.
   
   👨‍💻 Developer: @SmartBoy_ApnaMS
-  🔗 Channel: https://t.me/TeamCinderella
+  🔗 Channel: @PW_SENSEI
   
   Use responsibly and ethically. ✨
   `;
@@ -267,7 +267,7 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
         {
           type: "photo",
           media: START_IMAGE_URL, // The same image as the original one
-          caption: `Hello, ${firstName}! 👋\n\nWelcome to the bot. Here you can upload files or create batches of files to share later.\n\nJust Send Me Any File and Get Share link:`, // The original greeting caption
+          caption: `Hello, ${firstName}! 👋\n\nWelcome to the Sensei Era.\n\nIm Sensei File Store Robot.\n\n Here you can Get All Lectures who Shared By @PW_SENSEI:`, // The original greeting caption
           parse_mode: "HTML",
         },
         {
@@ -280,10 +280,10 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
                 { text: "About", callback_data: "about" },
               ],
               [
-                { text: "Developer Info", callback_data: "OwnerInfo" },
+                { text: "👨‍💻 Cʀᴇᴀᴛᴏʀ", callback_data: "OwnerInfo" },
                 { text: "Legal Disclaimer", callback_data: "legal" },
               ],
-              [{ text: "Update Channel", url: "https://t.me/TeamCinderella" }],
+              [{ text: "Update Channel", url: "https://t.me/PW_SENSEI" }],
             ],
           },
         }
