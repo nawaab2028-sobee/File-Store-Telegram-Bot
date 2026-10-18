@@ -1,3 +1,5 @@
+const forceSub = require("../forceSub");
+
 module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername, START_IMAGE_URL, FileModel, BatchModel ) {
   // Per-user 10 second cooldown between file requests (see /start handler below).
   // In-memory is fine here since it's just a UX rate-limit, not critical data.
@@ -5,13 +7,17 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
   const FILE_REQUEST_COOLDOWN_MS = 10000; // 10 seconds
 
   // Enhanced /start command with greeting, info, and buttons
-  bot.onText(/\/start(.*)/, async (msg, match) => {
+  const handleStart = async (msg, payloadRaw) => {
     const telegramId = msg.from.id;
     const firstName = msg.from.first_name;
 
     const botData = await BotModel.findOne();
 
-    const payload = match[1].trim(); // Extracting any start payload (remove any surrounding spaces)
+    const payload = (payloadRaw || "").trim(); // Extracting any start payload (remove any surrounding spaces)
+
+    // Force Subscribe: sabhi channels join na ho to yahin ruk jao
+    // (simple /start aur file/batch link dono par lagta hai)
+    if (!(await forceSub.gate(msg, payload))) return;
 
     if (payload) {
       // 10 second cooldown: a user must wait 10s after getting a file before
@@ -126,7 +132,11 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
         },
       });
     }
-  });
+  };
+
+  bot.onText(/\/start(.*)/, (msg, match) => handleStart(msg, match[1]));
+  // Force-sub ke "TRY AGAIN" button ke baad wahi /start dobara chalane ke liye
+  forceSub.setRetryHandler(handleStart);
 
   const OwnerInfo = `
   <b>🌟 Oᴡɴᴇʀ Dᴇᴛᴀɪʟs 🌟</b>
