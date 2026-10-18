@@ -262,7 +262,7 @@ async function notifyLeft(ch, userId) {
     linkCache.delete(`${ch.chatId}:${userId}`);
     const link = await getJoinLink(ch, userId, true);
     const text =
-      `😡 <b>Dude, why you left from this ${esc(ch.title)}?</b>\n\n` +
+      `😡 <b>Dude, why you left from this channel ${esc(ch.title)}?</b>\n\n` +
       `Please join it again, otherwise you can't use me.`;
     const opts = { parse_mode: "HTML", disable_web_page_preview: true };
     if (link) {
