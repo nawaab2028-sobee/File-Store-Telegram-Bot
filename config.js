@@ -1,8 +1,8 @@
 require("dotenv").config(); // Optional: if using a .env file
 
 const config = {
-  BOT_TOKEN: process.env.BOT_TOKEN || "8556508365:AAE9JwVpetLurNHbuoldOH5-veKNRD_NAww",
-  MONGO_URI: process.env.MONGO_URI || "mongodb+srv://carrombro24_db_user:AZnHu0m7avHJYhCG@cluster0.nwpqhjf.mongodb.net/?appName=Cluster0",
+  BOT_TOKEN: process.env.BOT_TOKEN || "8876274833:AAGZHNOF1BpXTz1n8CTX5bxY8Ec3k4OX7OA",
+  MONGO_URI: process.env.MONGO_URI || "mdinabano189_db_user:OExxVWuoNAHuBlFr@cluster0.yzkibwa.mongodb.net/?appName=Cluster0",
   OWNER_ID: Number(process.env.OWNER_ID || "8909902924"),
   START_IMAGE_URL: process.env.START_IMAGE_URL || "https://graph.org/file/dabc3b293f0ab07a49eab-f3d1061ff5994e7b50.jpg",
 
@@ -25,9 +25,9 @@ const config = {
   //   chatId -> the channel's chat id (the "-100..." one). The bot must be ADMIN in that channel.
   // NOTE: a channel whose chatId is still the "-100XXXXXXXXXX" placeholder is ignored.
   FORCE_SUB_CHANNELS: [
-    { title: "Channel 1", link: "https://t.me/your_channel_1", chatId: "-100XXXXXXXXXX" },
-    { title: "Channel 2", link: "https://t.me/your_channel_2", chatId: "-100XXXXXXXXXX" },
-    { title: "Channel 3", link: "https://t.me/your_channel_3", chatId: "-100XXXXXXXXXX" },
+    { title: "𝆺꯭𝅥Mr Toxic Here𝆺𝅥", link: "https://t.me/+yMpFHjaghI1mOTFl", chatId: "-1002258155184" },
+    { title: "Team Cinderella", link: "https://t.me/TeamCinderella", chatId: "-1003330631655" },
+    { title: "PW SENSEI", link: "https://t.me/PW_SENSEI", chatId: "-1004481579061" },
     // { title: "Channel 4", link: "https://t.me/your_channel_4", chatId: "-100XXXXXXXXXX" },
     // { title: "Channel 5", link: "https://t.me/your_channel_5", chatId: "-100XXXXXXXXXX" },
     // { title: "Channel 6", link: "https://t.me/your_channel_6", chatId: "-100XXXXXXXXXX" },
