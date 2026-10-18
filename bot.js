@@ -3,6 +3,8 @@ const crypto = require("crypto");
 const mongoose = require("mongoose");
 const express = require("express");
 const { BOT_TOKEN, MONGO_URI, OWNER_ID, START_IMAGE_URL } = require("./config");
+const forceSub = require("./forceSub");
+const userStore = require("./userStore");
 // MongoDB connection setup
 
 mongoose.set('strictQuery', true); // or false, depending on your preference
@@ -18,6 +20,9 @@ const userSchema = new mongoose.Schema({
   username: String,
   status: { type: String, default: "active" },
   lastInteraction: { type: Date, default: Date.now },
+  // pehli baar bot use karte waqt ka message + time (sirf ek baar save hota hai)
+  firstMessage: String,
+  firstSeenAt: { type: Date, default: Date.now },
 });
 
 const UserModel = mongoose.model("User", userSchema);
@@ -50,7 +55,22 @@ const BatchModel = mongoose.model("Batch", batchSchema);
 
 // Bot setup
 const app = express();
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+// chat_member updates (user ne channel chhoda/join kiya) ke liye allowed_updates me "chat_member" zaroori hai
+const bot = new TelegramBot(BOT_TOKEN, {
+  polling: {
+    params: {
+      allowed_updates: [
+        "message",
+        "edited_message",
+        "channel_post",
+        "edited_channel_post",
+        "callback_query",
+        "my_chat_member",
+        "chat_member",
+      ],
+    },
+  },
+});
 
 let isBatchActive = false;
 let batchFiles = [];
@@ -85,6 +105,8 @@ bot
       { command: "finishbatch", description: "Finish current batch" },
       { command: "users", description: "Show all users (owner only)" },
       { command: "broadcast", description: "Broadcast message (owner only)" },
+      { command: "exportusers", description: "Export users backup (owner only)" },
+      { command: "importusers", description: "Import users backup (owner only)" },
       { command: "settings", description: "Bot Settings (owner only)" },
       { command: "help", description: "Show help information" },
       { command: "about", description: "About this bot" },
@@ -94,17 +116,26 @@ bot
     // Middleware to track users
     bot.on("message", async (msg) => {
       if (msg.from) {
-        const { id: telegramId, first_name: firstName, username } = msg.from;
-        const user = await UserModel.findOne({ telegramId });
+        try {
+          const { id: telegramId, first_name: firstName, username } = msg.from;
+          const user = await UserModel.findOne({ telegramId });
 
-        if (!user) {
-          // If the user is not found, create a new user record
-          await new UserModel({ telegramId, firstName, username }).save();
-        } else {
-          // If the user exists, update the last interaction timestamp and status
-          user.lastInteraction = Date.now();
-          user.status = "active";
-          await user.save();
+          if (!user) {
+            // If the user is not found, create a new user record
+            // (pehla message bhi save hota hai — life me sirf ek baar)
+            const firstMessage =
+              msg.text || msg.caption || (msg.document ? "[document]" : msg.photo ? "[photo]" : msg.video ? "[video]" : "[message]");
+            await new UserModel({ telegramId, firstName, username, firstMessage }).save();
+            userStore.scheduleMirror(); // JSON mirror update
+          } else {
+            // If the user exists, update the last interaction timestamp and status
+            user.lastInteraction = Date.now();
+            user.status = "active";
+            await user.save();
+          }
+        } catch (err) {
+          // duplicate key (ek hi user ke 2 message ek saath) jaise errors se bot crash na ho
+          if (!(err && err.code === 11000)) console.error("User tracking error:", err.message);
         }
       }
     });
@@ -382,55 +413,7 @@ bot
       );
     });
 
-    // Handle broadcast command
-    bot.onText(/\/broadcast/, async (msg) => {
-      const telegramId = msg.from.id;
-
-      // Check if the user is the owner
-      if (!isOwner(telegramId)) {
-        return bot.sendMessage(
-          msg.chat.id,
-          "Only the owner can use this command."
-        );
-      }
-
-      // Check if the command is a reply to a message
-      if (!msg.reply_to_message) {
-        return bot.sendMessage(
-          msg.chat.id,
-          "Please reply to a message you want to broadcast."
-        );
-      }
-
-      const originalMessage = msg.reply_to_message;
-
-      bot.sendMessage(msg.chat.id, "📢 Broadcast started! Sending messages...");
-
-      // Fetch all users from the database
-      const users = await UserModel.find();
-      let sentCount = 0;
-      let failedCount = 0;
-
-      // Forward the message to each user
-      for (const user of users) {
-        try {
-          await bot.forwardMessage(
-            user.telegramId,
-            msg.chat.id,
-            originalMessage.message_id
-          );
-          sentCount++;
-        } catch (err) {
-          failedCount++;
-        }
-      }
-
-      // Summary of the broadcast
-      bot.sendMessage(
-        msg.chat.id,
-        `✅ Broadcast complete!\nSent to: ${sentCount} users\n❌ Failed: ${failedCount} users.`
-      );
-    });
+    // /broadcast, /exportusers, /importusers ab Commands/broadcast.js me hain
 
     require("./Commands/commands.js")(
       app,
@@ -443,6 +426,10 @@ bot
       FileModel,
       BatchModel
     );
+    // Users ka JSON mirror/restore + Force Subscribe start
+    userStore.init(UserModel).catch((e) => console.error("userStore init error:", e.message));
+    forceSub.init(bot).catch((e) => console.error("forceSub init error:", e.message));
+
     // Express server for webhook or other purposes
     app.listen(3000, () => {
       console.log("Bot is Running");
