@@ -20,7 +20,7 @@ const userSchema = new mongoose.Schema({
   username: String,
   status: { type: String, default: "active" },
   lastInteraction: { type: Date, default: Date.now },
-  // pehli baar bot use karte waqt ka message + time (sirf ek baar save hota hai)
+  // first message + time of the user (saved only once, the first time they use the bot)
   firstMessage: String,
   firstSeenAt: { type: Date, default: Date.now },
 });
@@ -55,11 +55,13 @@ const BatchModel = mongoose.model("Batch", batchSchema);
 
 // Bot setup
 const app = express();
-// chat_member updates (user ne channel chhoda/join kiya) ke liye allowed_updates me "chat_member" zaroori hai
+// "chat_member" must be in allowed_updates to get join/leave events of force-sub channels.
+// Telegram expects allowed_updates as a JSON STRING (a plain array gets serialized wrongly
+// by the library and the chat_member updates would never arrive).
 const bot = new TelegramBot(BOT_TOKEN, {
   polling: {
     params: {
-      allowed_updates: [
+      allowed_updates: JSON.stringify([
         "message",
         "edited_message",
         "channel_post",
@@ -67,7 +69,7 @@ const bot = new TelegramBot(BOT_TOKEN, {
         "callback_query",
         "my_chat_member",
         "chat_member",
-      ],
+      ]),
     },
   },
 });
@@ -122,7 +124,7 @@ bot
 
           if (!user) {
             // If the user is not found, create a new user record
-            // (pehla message bhi save hota hai — life me sirf ek baar)
+            // (the first message is saved too - only once in a lifetime)
             const firstMessage =
               msg.text || msg.caption || (msg.document ? "[document]" : msg.photo ? "[photo]" : msg.video ? "[video]" : "[message]");
             await new UserModel({ telegramId, firstName, username, firstMessage }).save();
@@ -134,7 +136,7 @@ bot
             await user.save();
           }
         } catch (err) {
-          // duplicate key (ek hi user ke 2 message ek saath) jaise errors se bot crash na ho
+          // e.g. duplicate key (2 messages of the same new user at once) must never crash the bot
           if (!(err && err.code === 11000)) console.error("User tracking error:", err.message);
         }
       }
@@ -413,7 +415,7 @@ bot
       );
     });
 
-    // /broadcast, /exportusers, /importusers ab Commands/broadcast.js me hain
+    // /broadcast, /exportusers, /importusers now live in Commands/broadcast.js
 
     require("./Commands/commands.js")(
       app,
@@ -426,13 +428,17 @@ bot
       FileModel,
       BatchModel
     );
-    // Users ka JSON mirror/restore + Force Subscribe start
+    // Users JSON mirror/restore + Force Subscribe start
     userStore.init(UserModel).catch((e) => console.error("userStore init error:", e.message));
     forceSub.init(bot).catch((e) => console.error("forceSub init error:", e.message));
 
-    // Express server for webhook or other purposes
-    app.listen(3000, () => {
-      console.log("Bot is Running");
+    // Express web server. Hosts like Render/Railway give the port in the PORT env variable
+    // and must find it open, otherwise the deploy keeps "scanning for open port".
+    app.get("/", (req, res) => res.send("Bot is running"));
+    app.get("/health", (req, res) => res.json({ status: "ok", uptime: process.uptime() }));
+    const PORT = Number(process.env.PORT) || 3000;
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Bot is Running (web server on port ${PORT})`);
     });
 
     console.log(`Bot username: @${botUsername}`);

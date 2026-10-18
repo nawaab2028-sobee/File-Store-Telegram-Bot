@@ -1,25 +1,56 @@
 // ─────────────────────────────────────────────────────────────────────────
 // Force Subscribe
-//  • config.js ke FORCE_SUB_CHANNELS ke saare channels join hone zaroori hain
-//  • /start (simple ya file/batch link) se pehle har user ka membership check
-//  • user channel chhode to turant DM: "why you left... Join Now"
-//  • har user ke liye personal (single-use) invite link
+//  - Every channel in FORCE_SUB_CHANNELS (config.js) must be joined
+//  - Membership is checked before /start (plain or file/batch link)
+//  - Joined users are SAVED in MongoDB (collection: fsmembers)
+//  - When a saved user leaves a channel, the bot DMs them immediately:
+//      1) instantly, via Telegram "chat_member" updates
+//      2) as a backup, via a periodic membership sweep (FORCE_SUB_SWEEP_SECONDS)
+//  - Personal single-use invite links are created per user
 // ─────────────────────────────────────────────────────────────────────────
+const mongoose = require("mongoose");
 const {
   FORCE_SUB_ENABLED,
   FORCE_SUB_EXEMPT_OWNER,
   FORCE_SUB_CHANNELS,
+  FORCE_SUB_SWEEP_SECONDS,
   OWNER_ID,
 } = require("./config");
 
-const INVITE_TTL_SEC = 24 * 60 * 60; // personal invite link 24 ghante valid
-const OWNER_ALERT_GAP_MS = 6 * 60 * 60 * 1000; // same error ka owner alert 6 ghante me ek hi baar
+const INVITE_TTL_SEC = 24 * 60 * 60; // personal invite link is valid for 24 hours
+const OWNER_ALERT_GAP_MS = 6 * 60 * 60 * 1000; // same owner alert at most once per 6 hours
+const LEFT_DM_GAP_MS = 10 * 60 * 1000; // never DM the same user+channel twice within 10 minutes
+const SWEEP_SEC = Number(FORCE_SUB_SWEEP_SECONDS === undefined ? 60 : FORCE_SUB_SWEEP_SECONDS);
 const IN_STATUSES = new Set(["creator", "administrator", "member"]);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const esc = (s) =>
   String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-// ── config se channels nikalna (placeholder / galat chatId ignore) ──
+// ── Saved "this user is joined in this channel" records ──
+const memberSchema = new mongoose.Schema({
+  userId: { type: Number, required: true },
+  chatId: { type: Number, required: true },
+  joinedAt: { type: Date, default: Date.now },
+});
+memberSchema.index({ userId: 1, chatId: 1 }, { unique: true });
+const FsMember = mongoose.models.FsMember || mongoose.model("FsMember", memberSchema);
+
+const markJoined = (userId, chatId) =>
+  FsMember.updateOne(
+    { userId, chatId },
+    { $setOnInsert: { joinedAt: new Date() } },
+    { upsert: true }
+  ).catch((e) => {
+    if (!e || e.code !== 11000) console.error("[ForceSub] save joined failed:", e && e.message);
+  });
+
+const unmark = (userId, chatId) =>
+  FsMember.deleteOne({ userId, chatId }).catch((e) =>
+    console.error("[ForceSub] delete record failed:", e && e.message)
+  );
+
+// ── Read channels from config (placeholder / invalid chatId are ignored) ──
 const channels = [];
 (function loadChannels() {
   const skipped = [];
@@ -37,19 +68,19 @@ const channels = [];
     });
   });
   if (skipped.length) {
-    console.warn(
-      `[ForceSub] chatId fill nahi hui, ignore kiye gaye channels: ${skipped.join(", ")}`
-    );
+    console.warn(`[ForceSub] chatId not filled, channels ignored: ${skipped.join(", ")}`);
   }
 })();
 
 const byChatId = new Map(channels.map((c) => [c.chatId, c]));
 const enabled = () => !!FORCE_SUB_ENABLED && channels.length > 0;
+const isExempt = (userId) => !!FORCE_SUB_EXEMPT_OWNER && userId === OWNER_ID;
 
 let bot = null;
-let retryHandler = null; // start.js set karta hai: (msgLike, payload) => ...
+let retryHandler = null; // set by start.js: (msgLike, payload) => ...
 const linkCache = new Map(); // "chatId:userId" -> { url, exp }
-const alertedAt = new Map(); // key -> timestamp (owner alerts spam rokne ke liye)
+const alertedAt = new Map(); // key -> timestamp (prevents owner alert spam)
+const leftDmAt = new Map(); // "userId:chatId" -> timestamp
 
 const errText = (err) =>
   (err && err.response && err.response.body && err.response.body.description) ||
@@ -69,11 +100,11 @@ async function alertOwner(key, text) {
       parse_mode: "HTML",
     });
   } catch (_) {
-    /* owner ne bot start nahi kiya ho to ignore */
+    /* owner has not started the bot - ignore */
   }
 }
 
-// ── personal invite link (fail ho to config wala link) ──
+// ── Personal invite link (falls back to the config link) ──
 async function getJoinLink(ch, userId, fresh = false) {
   const key = `${ch.chatId}:${userId}`;
   const cached = linkCache.get(key);
@@ -95,15 +126,15 @@ async function getJoinLink(ch, userId, fresh = false) {
   } catch (err) {
     alertOwner(
       `invite:${ch.chatId}`,
-      `<b>${esc(ch.title)}</b> (<code>${ch.chatId}</code>) ka invite link nahi bana: ${esc(
+      `Could not create an invite link for <b>${esc(ch.title)}</b> (<code>${ch.chatId}</code>): ${esc(
         errText(err)
-      )}\nBot ko channel me admin banao (Invite Users permission ke saath). Tab tak config wala link use hoga.`
+      )}\nMake the bot an admin there with the "Invite Users" permission. Until then the link from config.js is used.`
     );
     return ch.link || "";
   }
 }
 
-// ── user kin channels me join NAHI hai ──
+// ── Which channels has this user NOT joined? (also saves/removes joined records) ──
 async function getMissing(userId) {
   const results = await Promise.all(
     channels.map(async (ch) => {
@@ -111,19 +142,25 @@ async function getMissing(userId) {
         const m = await bot.getChatMember(ch.chatId, userId);
         return { ch, joined: isJoined(m) };
       } catch (err) {
-        // config problem (bot admin nahi / chatId galat) — users ko atkane se behtar hai skip karna
+        // Config problem (bot not admin / wrong chatId): skip the channel instead of locking everyone out
         alertOwner(
           `check:${ch.chatId}`,
-          `<b>${esc(ch.title)}</b> (<code>${ch.chatId}</code>) me membership check nahi ho paya: ${esc(
+          `Could not check membership in <b>${esc(ch.title)}</b> (<code>${ch.chatId}</code>): ${esc(
             errText(err)
-          )}\nBot ko us channel me admin banao aur chatId check karo. Jab tak ye theek nahi hota, ye channel skip hoga.`
+          )}\nMake the bot an admin in that channel and verify the chatId. This channel is skipped until it is fixed.`
         );
-        return { ch, joined: true };
+        return { ch, joined: true, failed: true };
       }
     })
   );
   results.forEach((r) => {
-    if (r.joined) linkCache.delete(`${r.ch.chatId}:${userId}`);
+    if (r.failed) return;
+    if (r.joined) {
+      linkCache.delete(`${r.ch.chatId}:${userId}`);
+      markJoined(userId, r.ch.chatId);
+    } else {
+      unmark(userId, r.ch.chatId);
+    }
   });
   return results.filter((r) => !r.joined).map((r) => r.ch);
 }
@@ -137,7 +174,7 @@ async function buildPrompt(user, payload, missing) {
   const text =
     `<blockquote><b>HEY ${name}</b></blockquote>\n\n` +
     `<b>${line}</b>\n\n` +
-    `<i>Sabhi channels join karke 🔄 TRY AGAIN dabao.</i>`;
+    `<i>Join all the channels below, then press 🔄 TRY AGAIN.</i>`;
 
   const links = await Promise.all(missing.map((ch) => getJoinLink(ch, user.id)));
   const buttons = [];
@@ -149,19 +186,19 @@ async function buildPrompt(user, payload, missing) {
   for (let i = 0; i < buttons.length; i += 2) rows.push(buttons.slice(i, i + 2));
 
   let cb = `fs_retry:${payload || ""}`;
-  if (Buffer.byteLength(cb) > 64) cb = "fs_retry:"; // telegram limit (64 bytes)
+  if (Buffer.byteLength(cb) > 64) cb = "fs_retry:"; // Telegram limit (64 bytes)
   rows.push([{ text: "🔄 TRY AGAIN", callback_data: cb }]);
 
   return { text, reply_markup: { inline_keyboard: rows } };
 }
 
-// ── /start se pehle call hota hai. true = aage badho, false = roko ──
+// ── Called before /start. true = continue, false = blocked ──
 async function gate(msg, payload) {
   try {
     if (!enabled() || !bot) return true;
     const user = msg.from;
     if (!user) return true;
-    if (FORCE_SUB_EXEMPT_OWNER && user.id === OWNER_ID) return true;
+    if (isExempt(user.id)) return true;
 
     const missing = await getMissing(user.id);
     if (!missing.length) return true;
@@ -175,7 +212,7 @@ async function gate(msg, payload) {
     return false;
   } catch (err) {
     console.error("[ForceSub] gate error:", errText(err));
-    return true; // koi unexpected error ho to bot ko band na karo
+    return true; // on an unexpected error, never take the whole bot down
   }
 }
 
@@ -185,13 +222,12 @@ async function onRetry(q) {
   const messageId = q.message.message_id;
   const payload = q.data.slice("fs_retry:".length);
 
-  const exempt = FORCE_SUB_EXEMPT_OWNER && q.from.id === OWNER_ID;
-  const missing = enabled() && !exempt ? await getMissing(q.from.id) : [];
+  const missing = enabled() && !isExempt(q.from.id) ? await getMissing(q.from.id) : [];
 
   if (missing.length) {
     await bot
       .answerCallbackQuery(q.id, {
-        text: "❗ Pehle sabhi channels join karo, phir TRY AGAIN dabao.",
+        text: "❗ Join all the channels first, then press TRY AGAIN.",
         show_alert: true,
       })
       .catch(() => {});
@@ -205,7 +241,7 @@ async function onRetry(q) {
         reply_markup,
       });
     } catch (_) {
-      /* "message is not modified" — ignore */
+      /* "message is not modified" - ignore */
     }
     return;
   }
@@ -217,7 +253,32 @@ async function onRetry(q) {
   }
 }
 
-// ── user ne channel chhoda → turant DM ──
+// ── The user left a force-sub channel: DM them right away ──
+async function notifyLeft(ch, userId) {
+  const key = `${userId}:${ch.chatId}`;
+  if (Date.now() - (leftDmAt.get(key) || 0) < LEFT_DM_GAP_MS) return;
+  leftDmAt.set(key, Date.now());
+  try {
+    linkCache.delete(`${ch.chatId}:${userId}`);
+    const link = await getJoinLink(ch, userId, true);
+    const text =
+      `😡 <b>Dude, why you left from this ${esc(ch.title)}?</b>\n\n` +
+      `Please join it again, otherwise you can't use me.`;
+    const opts = { parse_mode: "HTML", disable_web_page_preview: true };
+    if (link) {
+      opts.reply_markup = {
+        inline_keyboard: [[{ text: `✅ Join Now - ${ch.title}`, url: link }]],
+      };
+    }
+    await bot.sendMessage(userId, text, opts);
+    console.log(`[ForceSub] left-DM sent: user ${userId} left ${ch.title}`);
+  } catch (err) {
+    // The user never started the bot or has blocked it - the DM cannot be delivered
+    console.log("[ForceSub] left-DM skipped:", errText(err));
+  }
+}
+
+// ── Instant detection through Telegram "chat_member" updates ──
 async function onChatMember(upd) {
   try {
     const ch = upd && upd.chat && byChatId.get(upd.chat.id);
@@ -228,39 +289,60 @@ async function onChatMember(upd) {
     if (!oldM || !newM || !newM.user) return;
     const user = newM.user;
     if (user.is_bot) return;
+    console.log(`[ForceSub] chat_member: user ${user.id} ${oldM.status} -> ${newM.status} in ${ch.title}`);
 
-    // user join hua → purana invite link hata do
+    // User joined: save it
     if (isJoined(newM)) {
       linkCache.delete(`${ch.chatId}:${user.id}`);
+      if (!isExempt(user.id)) await markJoined(user.id, ch.chatId);
       return;
     }
 
-    // sirf "left" case (join tha, ab nahi hai). Ban/kick pe message nahi.
-    const wasIn = isJoined(oldM);
+    // User is no longer in the channel: remove the saved record
+    await unmark(user.id, ch.chatId);
+
+    // DM only for a real "left" (not for ban/kick)
     const nowLeft =
       newM.status === "left" || (newM.status === "restricted" && !newM.is_member);
-    if (!wasIn || !nowLeft) return;
-    if (FORCE_SUB_EXEMPT_OWNER && user.id === OWNER_ID) return;
-
-    linkCache.delete(`${ch.chatId}:${user.id}`);
-    const link = await getJoinLink(ch, user.id, true);
-    const text =
-      `😡 <b>Dude, why you left from this ${esc(ch.title)}?</b>\n\n` +
-      `Join it again, otherwise you can't use me.`;
-    const opts = { parse_mode: "HTML", disable_web_page_preview: true };
-    if (link) {
-      opts.reply_markup = {
-        inline_keyboard: [[{ text: `✅ Join Now - ${ch.title}`, url: link }]],
-      };
-    }
-    await bot.sendMessage(user.id, text, opts);
+    if (!nowLeft || !isJoined(oldM) || isExempt(user.id)) return;
+    await notifyLeft(ch, user.id);
   } catch (err) {
-    // user ne bot start nahi kiya / bot block hai → DM nahi ja sakta, ignore
-    console.log("[ForceSub] leave DM skipped:", errText(err));
+    console.error("[ForceSub] chat_member error:", errText(err));
   }
 }
 
-// ── bot.js se ek baar call hota hai ──
+// ── Backup detection: re-check every saved joined user periodically ──
+let sweeping = false;
+async function sweep() {
+  if (sweeping || !enabled()) return;
+  sweeping = true;
+  try {
+    const ids = channels.map((c) => c.chatId);
+    const cursor = FsMember.find({ chatId: { $in: ids } }).lean().cursor();
+    let n = 0;
+    for await (const rec of cursor) {
+      const ch = byChatId.get(rec.chatId);
+      if (!ch || isExempt(rec.userId)) continue;
+      try {
+        const m = await bot.getChatMember(rec.chatId, rec.userId);
+        if (!isJoined(m)) {
+          await unmark(rec.userId, rec.chatId);
+          const kicked = m && m.status === "kicked";
+          if (!kicked) await notifyLeft(ch, rec.userId);
+        }
+      } catch (_) {
+        /* temporary API error - try again in the next sweep */
+      }
+      if (++n % 20 === 0) await sleep(1000); // stay under Telegram rate limits
+    }
+  } catch (err) {
+    console.error("[ForceSub] sweep error:", errText(err));
+  } finally {
+    sweeping = false;
+  }
+}
+
+// ── Called once from bot.js ──
 async function init(botInstance) {
   bot = botInstance;
   if (!FORCE_SUB_ENABLED) {
@@ -268,7 +350,7 @@ async function init(botInstance) {
     return;
   }
   if (!channels.length) {
-    console.log("[ForceSub] koi valid channel configured nahi — force subscribe off");
+    console.log("[ForceSub] no valid channel configured - force subscribe is off");
     return;
   }
 
@@ -281,7 +363,7 @@ async function init(botInstance) {
     onChatMember(upd);
   });
 
-  // startup par check: bot har channel me admin hai ya nahi
+  // Startup check: is the bot an admin in every channel?
   try {
     const me = await bot.getMe();
     for (const ch of channels) {
@@ -290,7 +372,7 @@ async function init(botInstance) {
         if (m.status !== "administrator" && m.status !== "creator") {
           await alertOwner(
             `admin:${ch.chatId}`,
-            `Bot <b>${esc(ch.title)}</b> (<code>${ch.chatId}</code>) me admin nahi hai. Admin banao, warna check aur invite link kaam nahi karenge.`
+            `The bot is not an admin in <b>${esc(ch.title)}</b> (<code>${ch.chatId}</code>). Make it an admin, otherwise membership checks and invite links will not work.`
           );
         } else {
           console.log(`[ForceSub] OK: ${ch.title} (${ch.chatId})`);
@@ -298,14 +380,19 @@ async function init(botInstance) {
       } catch (err) {
         await alertOwner(
           `admin:${ch.chatId}`,
-          `<b>${esc(ch.title)}</b> (<code>${ch.chatId}</code>) access nahi ho raha: ${esc(
+          `Cannot access <b>${esc(ch.title)}</b> (<code>${ch.chatId}</code>): ${esc(
             errText(err)
-          )}\nchatId sahi hai? Bot channel me admin hai?`
+          )}\nIs the chatId correct? Is the bot an admin of the channel?`
         );
       }
     }
   } catch (err) {
     console.error("[ForceSub] startup check failed:", errText(err));
+  }
+
+  if (SWEEP_SEC > 0) {
+    setInterval(sweep, SWEEP_SEC * 1000);
+    console.log(`[ForceSub] leave-sweep every ${SWEEP_SEC}s`);
   }
   console.log(`[ForceSub] enabled with ${channels.length} channel(s)`);
 }
@@ -313,6 +400,7 @@ async function init(botInstance) {
 module.exports = {
   init,
   gate,
+  sweep, // exported for testing
   isEnabled: enabled,
   setRetryHandler: (fn) => {
     retryHandler = fn;

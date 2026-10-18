@@ -1,10 +1,10 @@
 // ─────────────────────────────────────────────────────────────────────────
-// Users ka persistent record
-//  • Asli data MongoDB me hai (restart / redeploy ke baad bhi bacha rehta hai)
-//  • Saath me ek JSON mirror (data/users.json) bhi likha jata hai
-//  • Mongo khaali mile aur JSON file ho to users apne aap restore ho jate hain
-//  • /exportusers → users.json owner ko Telegram me mil jati hai (safe backup)
-//  • /importusers → us file ko reply karke users wapas Mongo me daal sakte ho
+// Persistent user records
+//  • The real data lives in MongoDB (survives restarts / redeploys)
+//  • A JSON mirror (data/users.json) is written as well
+//  • If MongoDB is empty and the JSON file exists, users are restored automatically
+//  • /exportusers → sends users.json to the owner on Telegram (safe backup)
+//  • /importusers → reply to that file to put the users back into MongoDB
 // ─────────────────────────────────────────────────────────────────────────
 const fs = require("fs");
 const path = require("path");
@@ -47,15 +47,15 @@ async function writeMirror() {
     fs.writeFileSync(tmp, serialize(users));
     fs.renameSync(tmp, FILE);
   } catch (err) {
-    // Vercel jaise read-only filesystem par fail ho sakta hai — Mongo to hai hi
+    // May fail on a read-only filesystem (e.g. Vercel) - MongoDB still has everything
     if (!warned) {
       warned = true;
-      console.warn("[UserStore] JSON mirror nahi likh paya:", err.message);
+      console.warn("[UserStore] could not write JSON mirror:", err.message);
     }
   }
 }
 
-// naya user aane par call karo (5 sec debounce)
+// call when a new user is added (5 sec debounce)
 function scheduleMirror() {
   if (!UserModel) return;
   if (timer) clearTimeout(timer);
@@ -63,7 +63,7 @@ function scheduleMirror() {
   if (timer.unref) timer.unref();
 }
 
-// list of users (JSON se) → Mongo me merge. Existing users ko overwrite nahi karta.
+// Merge a list of users (from JSON) into MongoDB. Never overwrites existing users.
 async function importUsers(list) {
   const ops = [];
   let invalid = 0;
@@ -100,7 +100,7 @@ async function restoreIfEmpty() {
     if (!fs.existsSync(FILE)) return;
     const data = JSON.parse(fs.readFileSync(FILE, "utf8"));
     const r = await importUsers(data.users || data);
-    console.log(`[UserStore] Mongo khaali tha — JSON se ${r.added} users restore kiye`);
+    console.log(`[UserStore] MongoDB was empty - restored ${r.added} users from JSON`);
   } catch (err) {
     console.warn("[UserStore] restore skip:", err.message);
   }
