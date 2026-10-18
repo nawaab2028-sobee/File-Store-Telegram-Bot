@@ -1,8 +1,8 @@
-// /broadcast, /exportusers, /importusers  (sab sirf owner ke liye)
+// /broadcast, /exportusers, /importusers  (owner only)
 const axios = require("axios");
 const userStore = require("../userStore");
 
-const PER_SECOND = 20; // Telegram limit (~30 msg/sec) se neeche rehne ke liye
+const PER_SECOND = 20; // stay below Telegram's limit (~30 msg/sec)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const errInfo = (err) => {
@@ -18,7 +18,7 @@ module.exports = function (app, bot, UserModel, OWNER_ID) {
   const isOwner = (id) => id === OWNER_ID;
   let running = false;
 
-  // ek user ko forward karo → "sent" | "blocked" | "deleted" | "failed"
+  // forward to one user → "sent" | "blocked" | "deleted" | "failed"
   async function forwardTo(userId, fromChatId, messageId, attempt = 0) {
     try {
       await bot.forwardMessage(userId, fromChatId, messageId);
@@ -58,7 +58,7 @@ module.exports = function (app, bot, UserModel, OWNER_ID) {
         "📢 Broadcast started! Sending messages..."
       );
 
-      // DB me jitne bhi users hain (jo kabhi bot start kar chuke) sabko jayega
+      // goes to every user in the DB (everyone who ever started the bot)
       const users = await UserModel.find({}, { telegramId: 1 }).lean();
       const total = users.length;
       const counts = { sent: 0, blocked: 0, deleted: 0, failed: 0 };
@@ -93,7 +93,7 @@ module.exports = function (app, bot, UserModel, OWNER_ID) {
         if (wait > 0) await sleep(wait);
       }
 
-      // status sync (blocked / deleted / wapas active)
+      // status sync (blocked / deleted / active again)
       try {
         if (sentIds.length)
           await UserModel.updateMany(
@@ -138,7 +138,7 @@ module.exports = function (app, bot, UserModel, OWNER_ID) {
       await bot.sendDocument(
         msg.chat.id,
         buf,
-        { caption: `👥 ${users.length} users backup.\nRestore: is file ko reply karke /importusers bhejo.` },
+        { caption: `👥 ${users.length} users backup.\nTo restore: reply to this file with /importusers.` },
         { filename: "users.json", contentType: "application/json" }
       );
     } catch (err) {
@@ -146,14 +146,14 @@ module.exports = function (app, bot, UserModel, OWNER_ID) {
     }
   });
 
-  // users.json par reply karke /importusers → Mongo me merge
+  // reply to users.json with /importusers → merged into MongoDB
   bot.onText(/\/importusers/, async (msg) => {
     if (!isOwner(msg.from.id)) return;
     const doc = msg.reply_to_message && msg.reply_to_message.document;
     if (!doc) {
       return bot.sendMessage(
         msg.chat.id,
-        "users.json file par reply karke /importusers bhejo."
+        "Reply to a users.json file with /importusers."
       );
     }
     try {

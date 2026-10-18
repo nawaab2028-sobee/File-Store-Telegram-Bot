@@ -15,8 +15,8 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
 
     const payload = (payloadRaw || "").trim(); // Extracting any start payload (remove any surrounding spaces)
 
-    // Force Subscribe: sabhi channels join na ho to yahin ruk jao
-    // (simple /start aur file/batch link dono par lagta hai)
+    // Force Subscribe: stop here unless the user has joined all required channels
+    // (applies to plain /start and to every file/batch link)
     if (!(await forceSub.gate(msg, payload))) return;
 
     if (payload) {
@@ -135,7 +135,7 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
   };
 
   bot.onText(/\/start(.*)/, (msg, match) => handleStart(msg, match[1]));
-  // Force-sub ke "TRY AGAIN" button ke baad wahi /start dobara chalane ke liye
+  // Lets the force-sub "TRY AGAIN" button re-run the same /start after the user has joined
   forceSub.setRetryHandler(handleStart);
 
   const OwnerInfo = `
