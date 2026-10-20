@@ -1,6 +1,7 @@
 // /broadcast, /exportusers, /importusers  (owner only)
 const axios = require("axios");
 const userStore = require("../userStore");
+const { ADMIN_IDS } = require("../config");
 
 const PER_SECOND = 20; // stay below Telegram's limit (~30 msg/sec)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -15,7 +16,8 @@ const errInfo = (err) => {
 };
 
 module.exports = function (app, bot, UserModel, OWNER_ID) {
-  const isOwner = (id) => id === OWNER_ID;
+  // Owner + admins only
+  const isOwner = (id) => id === OWNER_ID || ADMIN_IDS.includes(id);
   let running = false;
 
   // forward to one user → "sent" | "blocked" | "deleted" | "failed"
@@ -40,9 +42,7 @@ module.exports = function (app, bot, UserModel, OWNER_ID) {
   }
 
   bot.onText(/\/broadcast/, async (msg) => {
-    if (!isOwner(msg.from.id)) {
-      return bot.sendMessage(msg.chat.id, "Only the owner can use this command.");
-    }
+    if (!isOwner(msg.from.id)) return; // other users get the "useless message" warning
     if (!msg.reply_to_message) {
       return bot.sendMessage(msg.chat.id, "Please reply to a message you want to broadcast.");
     }

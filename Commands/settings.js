@@ -1,4 +1,9 @@
+const { ADMIN_IDS } = require("../config");
+
 module.exports = async function (app, bot, UserModel, OWNER_ID, BotModel) {
+  // Owner + admins only
+  const isStaff = (id) => id === OWNER_ID || ADMIN_IDS.includes(id);
+
   let botData = await BotModel.findOne();
   if (!botData) {
     // Safety net: bot.js already creates this on startup, but in case
@@ -9,7 +14,7 @@ module.exports = async function (app, bot, UserModel, OWNER_ID, BotModel) {
 
   bot.onText(/\/settings/, async (msg) => {
     const chatId = msg.chat.id;
-    if (chatId != OWNER_ID) return;
+    if (!isStaff(msg.from.id)) return;
 
     // Always read the latest value from DB so the menu reflects the
     // current state even if it was changed elsewhere.
@@ -41,6 +46,7 @@ module.exports = async function (app, bot, UserModel, OWNER_ID, BotModel) {
 
   // sq - settings query - for handle settings callbacks
   bot.on("callback_query", async (sq) => {
+    if (!isStaff(sq.from.id)) return;
     if (sq.data === "enable_auto_del") {
       try {
         botData.autodel = "enable";

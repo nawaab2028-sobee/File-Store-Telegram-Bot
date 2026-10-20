@@ -6,6 +6,33 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
   const lastFileRequestAt = new Map();
   const FILE_REQUEST_COOLDOWN_MS = 10000; // 10 seconds
 
+  const esc = (str) =>
+    String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  // Welcome message: normal greeting with the user mentioned (clickable)
+  const welcomeCaption = (user) =>
+    `Hello, <a href="tg://user?id=${user.id}">${esc(user.first_name || "there")}</a>! 👋\n\n` +
+    `Welcome to the File Store Bot.\n\n` +
+    `Open a shared link to get your files and lectures instantly.`;
+  const welcomeButtons = [
+    [
+      { text: "About", callback_data: "about" },
+      { text: "👨‍💻 Cʀᴇᴀᴛᴏʀ", callback_data: "OwnerInfo" },
+    ],
+  ];
+
+  // Sends a stored text item (keeps its formatting; falls back to plain text if HTML fails)
+  const sendTextItem = async (chatId, item) => {
+    if (item.html) {
+      try {
+        return await bot.sendMessage(chatId, item.html, { parse_mode: "HTML" });
+      } catch (e) {
+        /* fall back to plain text below */
+      }
+    }
+    return bot.sendMessage(chatId, item.text || item.fileName || "");
+  };
+
   // Enhanced /start command with greeting, info, and buttons
   const handleStart = async (msg, payloadRaw) => {
     const telegramId = msg.from.id;
@@ -30,7 +57,7 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
         const remainingSec = Math.ceil((FILE_REQUEST_COOLDOWN_MS - elapsed) / 1000);
         return bot.sendMessage(
           msg.chat.id,
-          `⏳ Please wait ${remainingSec} second${remainingSec > 1 ? "s" : ""} for the next file.\n\nThis feature ensures a smooth experience for every Sensei's user.`
+          `⏳ Please wait ${remainingSec} second${remainingSec > 1 ? "s" : ""} for the next file.\n\nThis feature ensures a smooth experience for every user.`
         );
       }
 
@@ -40,6 +67,24 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
         (await BatchModel.findOne({ batchId: payload }));
 
       if (fileData) {
+        if (fileData.type === "text") {
+          // A stored text message
+          const sentMessage = await sendTextItem(msg.chat.id, fileData);
+          lastFileRequestAt.set(telegramId, Date.now());
+
+          if (botData.autodel === "disable") return;
+
+          bot.sendMessage(
+            msg.chat.id,
+            "🚨 Note: \n\nThis message will be deleted after 10 minutes. Please save or forward it to your personal saved messages to avoid losing it!"
+          );
+          setTimeout(() => {
+            bot.deleteMessage(msg.chat.id, sentMessage.message_id).catch((err) => {
+              console.error("Failed to delete message:", err);
+            });
+          }, 600000); // 10 minutes
+          return;
+        }
         if (fileData.fileId) {
           if (fileData.type === "photo") {
             const sentMessage = await bot.sendPhoto(
@@ -81,14 +126,17 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
           const sentMessages = [];
 
           for (const file of fileData.files) {
-            const sentMsg = await bot.sendDocument(msg.chat.id, file.fileId, {
-              caption: file.caption || file.fileName,
-            });
+            const sentMsg =
+              file.type === "text"
+                ? await sendTextItem(msg.chat.id, file)
+                : await bot.sendDocument(msg.chat.id, file.fileId, {
+                    caption: file.caption || file.fileName,
+                  });
             sentMessages.push(sentMsg.message_id);
             // Auto-share the next file after 10 seconds — user can't manually
             // request each file individually inside a batch, so this is done
             // automatically, except after the last one.
-            await new Promise((resolve) => setTimeout(resolve, 10000));
+            if (file.type !== "text") await new Promise((resolve) => setTimeout(resolve, 10000));
           }
 
           lastFileRequestAt.set(telegramId, Date.now());
@@ -116,20 +164,9 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
     } else {
       // If no payload, send the welcome message with inline buttons
       await bot.sendPhoto(msg.chat.id, START_IMAGE_URL, {
-        caption: `Hello, ${firstName}! 👋\n\nWelcome to the Sensei Era.\n\nIm Sensei File Store Robot.\n\n Here you can Get All Lectures who Shared By @PW_SENSEI.:`,
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: "Help", callback_data: "help" },
-              { text: "About", callback_data: "about" },
-            ],
-            [
-              { text: "👨‍💻 Cʀᴇᴀᴛᴏʀ", callback_data: "OwnerInfo" },
-              { text: "Legal Disclaimer", callback_data: "legal" },
-            ],
-            [{ text: "Update Channel", url: "https://t.me/PW_SENSEI" }],
-          ],
-        },
+        caption: welcomeCaption(msg.from),
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: welcomeButtons },
       });
     }
   };
@@ -145,21 +182,7 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
   
   <b>📱 Tɢ Uѕᴇʀɴᴀᴍᴇ:</b> <b>@SmartBoy_ApnaMS</b> 
   
-  <b>🌐 Channel:</b> <b><a href="https://t.me/PW_SENSEI">PW SENSEI</a></b> 
-  
   <b>✨ Cᴏɴnᴇᴄᴛ tᴏ mᴏʀᴇ cʀᴇᴀᴛɪvᴇ jᴏᴜʀɴᴇʏ✨</b> 
-  `;
-  const help = `
-  <b>> Help Menu</b>
-  
-  Im Sensei File Store Robot.
-      
-  <b>> Available Commands:</b>
-  ~ /start - check i am alive.
-  ~ /batch - To store multiple files in a single link.
-  ~ /finishbatch - To stop the batch.
-  ~ /users - To View the all Users.
-  ~ /broadcast - Broadcast a messages to users.
   `;
   const aboutMessage = `
   <blockquote><b>🎥 Mʏ Nᴀᴍᴇ: <a href='https://t.me/${botUsername}'>File-Store-Bot</a></b></blockquote>
@@ -168,28 +191,6 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
   <blockquote><b>💜 Supporter: <a href='https://t.me/Lapata_786'>Sistu 💜</a></b></blockquote>
   <blockquote><b>🤝 Brother: <a href='https://t.me/Mk_khan001'>MK Bro</a></b></blockquote>
   <blockquote><b>💾 Bᴏᴛ Sᴇʀᴠᴇʀ: <a href='https://vercel.com'>Vercel 😁</a></b></blockquote>
-  <blockquote><b>🚀 Official Channel: <a href='https://t.me/PW_SENSEI'>PW SENSEI⚡</a></b></blockquote>
-  `;
-
-  const legalText = `
-  <b>📜 Legal Disclaimer</b>
-  
-  This bot is created solely for <b>educational</b> and <b>personal file storage</b> purposes.
-  
-  📁 You may use this bot to:
-  - Store and retrieve Sensei own documents, videos.
-  - Share educational content with others using secure file links.
-  
-  🚫 <b>Prohibited Uses:</b>
-  - Uploading or sharing copyrighted, illegal, or harmful content.
-  - Using the bot for piracy, harassment, or spreading misinformation.
-  
-  🛡️ By using this bot, you agree to take full responsibility for the content you Watch. The developer is not liable for any misuse.
-  
-  👨‍💻 Developer: @SmartBoy_ApnaMS
-  🔗 Channel: @PW_SENSEI
-  
-  Use responsibly and ethically. ✨
   `;
 
   // Handle callback query for Developer Info
@@ -205,24 +206,6 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
           type: "photo",
           media: START_IMAGE_URL,
           caption: OwnerInfo, // The updated caption with the About information
-          parse_mode: "HTML",
-        },
-        {
-          chat_id: chatId,
-          message_id: messageId,
-          reply_markup: {
-            inline_keyboard: [[{ text: "⬅️ Bᴀᴄᴋ", callback_data: "back" }]],
-          },
-        }
-      );
-    }
-    if (query.data === "help") {
-      // Edit the message to show the About message along with the new image
-      bot.editMessageMedia(
-        {
-          type: "photo",
-          media: START_IMAGE_URL,
-          caption: help, // The updated caption with the About information
           parse_mode: "HTML",
         },
         {
@@ -252,50 +235,19 @@ module.exports = function ( app, bot, UserModel, OWNER_ID, BotModel, botUsername
         }
       );
     }
-    if (query.data === "legal") {
-      // Edit the message to show the About message along with the new image
-      bot.editMessageMedia(
-        {
-          type: "photo",
-          media: START_IMAGE_URL,
-          caption: legalText, // The updated caption with the About information
-          parse_mode: "HTML",
-        },
-        {
-          chat_id: chatId,
-          message_id: messageId,
-          reply_markup: {
-            inline_keyboard: [[{ text: "⬅️ Bᴀᴄᴋ", callback_data: "back" }]],
-          },
-        }
-      );
-    }
-
     if (query.data === "back") {
       // Revert back to the original greeting image and message
       bot.editMessageMedia(
         {
           type: "photo",
           media: START_IMAGE_URL, // The same image as the original one
-          caption: `Hello, ${firstName}! 👋\n\nWelcome to the Sensei Era.\n\nIm Sensei File Store Robot.\n\n Here you can Get All Lectures who Shared By @PW_SENSEI:`, // The original greeting caption
+          caption: welcomeCaption(query.from), // The original greeting caption
           parse_mode: "HTML",
         },
         {
           chat_id: chatId,
           message_id: messageId,
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "Help", callback_data: "help" },
-                { text: "About", callback_data: "about" },
-              ],
-              [
-                { text: "👨‍💻 Cʀᴇᴀᴛᴏʀ", callback_data: "OwnerInfo" },
-                { text: "Legal Disclaimer", callback_data: "legal" },
-              ],
-              [{ text: "Update Channel", url: "https://t.me/PW_SENSEI" }],
-            ],
-          },
+          reply_markup: { inline_keyboard: welcomeButtons },
         }
       );
     }

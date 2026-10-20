@@ -1,12 +1,16 @@
+const { ADMIN_IDS } = require("../config");
+
 module.exports = async function (app, bot, UserModel, OWNER_ID, BotModel) {
   bot.onText(/\/legal|\/disclaimer/, (msg) => {
+    // Owner + admins only
+    if (msg.from.id !== OWNER_ID && !ADMIN_IDS.includes(msg.from.id)) return;
     const legalText = `
   <b>📜 Legal Disclaimer</b>
   
   This bot is created solely for <b>educational</b> and <b>personal file storage</b> purposes.
   
   📁 You may use this bot to:
-  - Store and retrieve Sensei own documents, videos.
+  - Store and retrieve your own documents, videos.
   - Share educational content with others using secure file links.
   
   🚫 <b>Prohibited Uses:</b>
@@ -16,7 +20,6 @@ module.exports = async function (app, bot, UserModel, OWNER_ID, BotModel) {
   🛡️ By using this bot, you agree to take full responsibility for the content you Watch. The developer is not liable for any misuse.
   
   👨‍💻 Developer: @SmartBoy_ApnaMS
-  🔗 Channel: @PW_SENSEI
   
   Use responsibly and ethically. ✨
   `;
