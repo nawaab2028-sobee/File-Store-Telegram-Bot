@@ -4,6 +4,17 @@ const config = {
   BOT_TOKEN: process.env.BOT_TOKEN || "8876274833:AAGjRHq2ubP9SqDs9doEt364kzn7hIv5Bwo",
   MONGO_URI: process.env.MONGO_URI || "mongodb+srv://mdinabano189_db_user:OExxVWuoNAHuBlFr@cluster0.yzkibwa.mongodb.net/?appName=Cluster0",
   OWNER_ID: Number(process.env.OWNER_ID || "8909902924"),
+
+  // Admins (besides the owner) who can use every command of the bot.
+  // Add their Telegram user ids here, e.g. [123456789, 987654321]
+  // (or set the ADMIN_IDS env variable as comma separated ids: 123456789,987654321).
+  ADMIN_IDS: [
+    // 123456789,
+    ...(process.env.ADMIN_IDS || "")
+      .split(",")
+      .map((x) => Number(x.trim()))
+      .filter((n) => Number.isSafeInteger(n) && n > 0),
+  ],
   START_IMAGE_URL: process.env.START_IMAGE_URL || "https://graph.org/file/dabc3b293f0ab07a49eab-f3d1061ff5994e7b50.jpg",
 
   // ═══════════════════════════ FORCE SUBSCRIBE ═══════════════════════════

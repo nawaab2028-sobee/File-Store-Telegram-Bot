@@ -2,7 +2,8 @@ const TelegramBot = require("node-telegram-bot-api");
 const crypto = require("crypto");
 const mongoose = require("mongoose");
 const express = require("express");
-const { BOT_TOKEN, MONGO_URI, OWNER_ID, START_IMAGE_URL } = require("./config");
+const { BOT_TOKEN, MONGO_URI, OWNER_ID, ADMIN_IDS, START_IMAGE_URL } = require("./config");
+const { entitiesToHtml } = require("./textFormat");
 const forceSub = require("./forceSub");
 const userStore = require("./userStore");
 // MongoDB connection setup
@@ -41,6 +42,9 @@ const fileSchema = new mongoose.Schema({
   type: String,
   fileName: String,
   caption: String,
+  // text messages (type "text"): plain text + the same text as Telegram-HTML (keeps bold/links/etc.)
+  text: String,
+  html: String,
   createdBy: Number,
 });
 
@@ -74,9 +78,8 @@ const bot = new TelegramBot(BOT_TOKEN, {
   },
 });
 
-let isBatchActive = false;
-let batchFiles = [];
-let currentBatchId = null;
+// Batches are kept per user, so the owner and every admin can run their own batch at the same time
+const batches = new Map(); // userId -> { id, files: [] }
 
 // Variable to temporarily store broadcast message
 let broadcastMessage = null;
@@ -84,6 +87,10 @@ let broadcastType = null;
 
 // Helper function to check if the user is the owner
 const isOwner = (userId) => userId === OWNER_ID;
+// Owner + admins: only they can use the bot's commands / upload content
+const isStaff = (userId) => userId === OWNER_ID || ADMIN_IDS.includes(userId);
+const SHARE_BASE = "https://t.me/Testbro786Bot?start=";
+const USELESS_WARNING = "<b>🤨 Do not send any useless message in this bot.</b>";
 // Get bot information asynchronously
 bot
   .getMe()
@@ -101,19 +108,7 @@ bot
       console.log("Initialized default BotModel settings document.");
     }
 
-    bot.setMyCommands([
-      { command: "start", description: "Start the bot" },
-      { command: "batch", description: "Start a batch upload" },
-      { command: "finishbatch", description: "Finish current batch" },
-      { command: "users", description: "Show all users (owner only)" },
-      { command: "broadcast", description: "Broadcast message (owner only)" },
-      { command: "exportusers", description: "Export users backup (owner only)" },
-      { command: "importusers", description: "Import users backup (owner only)" },
-      { command: "settings", description: "Bot Settings (owner only)" },
-      { command: "help", description: "Show help information" },
-      { command: "about", description: "About this bot" },
-      { command: "legal", description: "Legal disclaimer & usage terms" },
-    ]);
+    bot.setMyCommands([{ command: "start", description: "Start the bot" }]);
 
     // Middleware to track users
     bot.on("message", async (msg) => {
@@ -142,6 +137,21 @@ bot
       }
     });
 
+    // Access control: everything except /start is only for the owner and admins.
+    // (Their handlers below stay silent for other users - this is the single place that replies.)
+    const lastWarnAt = new Map();
+    bot.on("message", (msg) => {
+      if (!msg.from || msg.from.is_bot || !msg.chat || msg.chat.type !== "private") return;
+      if (isStaff(msg.from.id)) return;
+      if (/\/start(.*)/.test(msg.text || "")) return; // same pattern as the /start handler
+      const now = Date.now();
+      if (now - (lastWarnAt.get(msg.from.id) || 0) < 1500) return; // do not flood the user
+      lastWarnAt.set(msg.from.id, now);
+      bot
+        .sendMessage(msg.chat.id, USELESS_WARNING, { parse_mode: "HTML" })
+        .catch(() => {});
+    });
+
     // Function to delete the message from user's chat after a specified timeout
     /*    const deleteMessageAfterTimeout = async (chatId, messageId, timeout) => {
       setTimeout(async () => {
@@ -161,205 +171,141 @@ bot
 
     // Command to start a batch
     bot.onText(/\/batch/, (msg) => {
-      const chatId = msg.from.id;
+      const userId = msg.from.id;
+      if (!isStaff(userId)) return; // other users get the "useless message" warning
 
-      // Check if the user is the owner
-      if (!isOwner(chatId)) {
-        bot.sendMessage(chatId, "Only the owner can start a batch.");
-        return;
-      }
-
-      // Start a new batch
-      isBatchActive = true;
-      currentBatchId = crypto.randomBytes(8).toString("hex");
-      batchFiles = [];
+      // Start a new batch for this user
+      batches.set(userId, { id: crypto.randomBytes(8).toString("hex"), files: [] });
 
       // Inform the user that the batch has started
-      bot.sendMessage(chatId, "Batch started! Send files for the batch.");
+      bot.sendMessage(msg.chat.id, "Batch started! Send files (or text messages) for the batch.");
     });
 
-    // Handle document uploads
-    bot.on("document", async (msg) => {
-      const file = {
-        fileId: msg.document.file_id,
-        type: "document",
-        fileName: msg.document.file_name || "File",
-        caption: msg.caption || "",
-      };
+    // One place for everything an owner/admin sends: file, photo, video, audio or text.
+    // Inside a batch it is added to the batch, otherwise it is saved and a link is generated.
+    const handleIncoming = async (msg, file, label) => {
+      const userId = msg.from.id;
+      if (!isStaff(userId)) return;
 
-      if (isBatchActive && isOwner(msg.from.id)) {
-        batchFiles.push(file);
-        bot.sendMessage(
+      const batch = batches.get(userId);
+      if (batch) {
+        batch.files.push(file);
+        return bot.sendMessage(
           msg.chat.id,
-          "File added to the batch.\n\nSend next file or click /finishbatch for End and Get batch link"
-        );
-      } else if (!isBatchActive && isOwner(msg.from.id)) {
-        const uniqueId = crypto.randomBytes(8).toString("hex");
-        const singleFile = new FileModel({
-          uniqueId,
-          ...file,
-          createdBy: msg.from.id,
-        });
-
-        await singleFile.save();
-        const shareLink = `https://t.me/PWSENSEI_FileStoreBot?start=${uniqueId}`;
-        bot.sendMessage(
-          msg.chat.id,
-          `File saved! Shareable link: ${shareLink}`
-        );
-      } else if (!isOwner(msg.from.id)) {
-        bot.sendMessage(
-          msg.chat.id,
-          "Sorry you can't use this feature\nPowerd By: @PW_SENSEI"
+          `${label} added to the batch.\n\nSend next file or click /finishbatch for End and Get batch link`
         );
       }
-    });
+
+      const uniqueId = crypto.randomBytes(8).toString("hex");
+      await new FileModel({ uniqueId, ...file, createdBy: userId }).save();
+      return bot.sendMessage(
+        msg.chat.id,
+        `${label} saved! Shareable link: ${SHARE_BASE}${uniqueId}`
+      );
+    };
+    const safeHandle = (msg, file, label) =>
+      handleIncoming(msg, file, label).catch((err) =>
+        console.error(`Failed to store ${label}:`, err.message)
+      );
 
     // Handle document uploads
-    bot.on("photo", async (msg) => {
-      const photoSizes = msg.photo;
-      const largestPhoto = photoSizes[photoSizes.length - 1]; // choose highest resolution photo
+    bot.on("document", (msg) =>
+      safeHandle(
+        msg,
+        {
+          fileId: msg.document.file_id,
+          type: "document",
+          fileName: msg.document.file_name || "File",
+          caption: msg.caption || "",
+        },
+        "File"
+      )
+    );
 
-      const file = {
-        fileId: largestPhoto.file_id,
-        type: "photo",
-        fileName: "Photo",
-        caption: msg.caption || "",
-      };
-
-      if (isBatchActive && isOwner(msg.from.id)) {
-        batchFiles.push(file);
-        bot.sendMessage(
-          msg.chat.id,
-          "Photo added to the batch.\n\nSend next file or click /finishbatch for End and Get batch link."
-        );
-      } else if (!isBatchActive && isOwner(msg.from.id)) {
-        const uniqueId = crypto.randomBytes(8).toString("hex");
-        const singleFile = new FileModel({
-          uniqueId,
-          ...file,
-          createdBy: msg.from.id,
-        });
-
-        await singleFile.save();
-        const shareLink = `https://t.me/PWSENSEI_FileStoreBot?start=${uniqueId}`;
-        bot.sendMessage(
-          msg.chat.id,
-          `File saved! Shareable link: ${shareLink}`
-        );
-      } else if (!isOwner(msg.from.id)) {
-        bot.sendMessage(
-          msg.chat.id,
-          "Sorry you can't use this feature\nPowerd By: @PW_SENSEI"
-        );
-      }
+    // Handle photo uploads
+    bot.on("photo", (msg) => {
+      const largestPhoto = msg.photo[msg.photo.length - 1]; // choose highest resolution photo
+      safeHandle(
+        msg,
+        {
+          fileId: largestPhoto.file_id,
+          type: "photo",
+          fileName: "Photo",
+          caption: msg.caption || "",
+        },
+        "Photo"
+      );
     });
 
     // Handle video uploads
-    bot.on("video", async (msg) => {
-      const file = {
-        fileId: msg.video.file_id,
-        type: "video",
-        fileName: msg.video.file_name || "Video",
-        caption: msg.caption || "",
-      };
-
-      if (isBatchActive && isOwner(msg.from.id)) {
-        batchFiles.push(file);
-        bot.sendMessage(
-          msg.chat.id,
-          "Video added to the batch.\n\nSend next file or click /finishbatch for End and Get batch link"
-        );
-      } else if (!isBatchActive && isOwner(msg.from.id)) {
-        const uniqueId = crypto.randomBytes(8).toString("hex");
-        const singleFile = new FileModel({
-          uniqueId,
-          ...file,
-          createdBy: msg.from.id,
-        });
-
-        await singleFile.save();
-        const shareLink = `https://t.me/PWSENSEI_FileStoreBot?start=${uniqueId}`;
-        bot.sendMessage(
-          msg.chat.id,
-          `Video saved! Shareable link: ${shareLink}`
-        );
-      } else if (!isOwner(msg.from.id)) {
-        bot.sendMessage(
-          msg.chat.id,
-          "Sorry you can't use this feature\nPowerd By: @PW_SENSEI"
-        );
-      }
-    });
+    bot.on("video", (msg) =>
+      safeHandle(
+        msg,
+        {
+          fileId: msg.video.file_id,
+          type: "video",
+          fileName: msg.video.file_name || "Video",
+          caption: msg.caption || "",
+        },
+        "Video"
+      )
+    );
 
     // Handle audio uploads
-    bot.on("audio", async (msg) => {
-      const file = {
-        fileId: msg.audio.file_id,
-        type: "audio",
-        fileName: msg.audio.file_name || "Audio",
-        caption: msg.caption || "",
-      };
+    bot.on("audio", (msg) =>
+      safeHandle(
+        msg,
+        {
+          fileId: msg.audio.file_id,
+          type: "audio",
+          fileName: msg.audio.file_name || "Audio",
+          caption: msg.caption || "",
+        },
+        "Audio"
+      )
+    );
 
-      if (isBatchActive && isOwner(msg.from.id)) {
-        batchFiles.push(file);
-        bot.sendMessage(
-          msg.chat.id,
-          "Audio added to the batch.\n\nSend next file or click /finishbatch for End and Get batch link."
-        );
-      } else if (!isBatchActive && isOwner(msg.from.id)) {
-        const uniqueId = crypto.randomBytes(8).toString("hex");
-        const singleFile = new FileModel({
-          uniqueId,
-          ...file,
-          createdBy: msg.from.id,
-        });
-
-        await singleFile.save();
-        const shareLink = `https://t.me/PWSENSEI_FileStoreBot?start=${uniqueId}`;
-        bot.sendMessage(
-          msg.chat.id,
-          `Audio saved! Shareable link: ${shareLink}`
-        );
-      } else if (!isOwner(msg.from.id)) {
-        bot.sendMessage(
-          msg.chat.id,
-          "Sorry you can't use this feature\nPowerd By: @PW_SENSEI"
-        );
-      }
+    // Handle plain text messages (commands are ignored): text can be stored + shared like a file
+    bot.on("text", (msg) => {
+      if (!msg.text || msg.text.startsWith("/")) return;
+      if (!isStaff(msg.from.id)) return;
+      safeHandle(
+        msg,
+        {
+          type: "text",
+          fileName: msg.text.replace(/\s+/g, " ").slice(0, 40),
+          caption: "",
+          text: msg.text,
+          html: entitiesToHtml(msg.text, msg.entities),
+        },
+        "Text"
+      );
     });
 
     // Command to finish the batch
     bot.onText(/\/finishbatch/, async (msg) => {
       const telegramId = msg.from.id;
-
-      // Check if the user is the owner
-      if (!isOwner(telegramId)) {
-        bot.sendMessage(msg.chat.id, "Only the owner can finish the batch.");
-        return;
-      }
+      if (!isStaff(telegramId)) return; // other users get the "useless message" warning
 
       // Check if the batch is active and has files
-      if (isBatchActive && batchFiles.length > 0) {
+      const batch = batches.get(telegramId);
+      if (batch && batch.files.length > 0) {
         // Save the batch data to the database
         const batchData = new BatchModel({
-          batchId: currentBatchId,
-          files: batchFiles,
+          batchId: batch.id,
+          files: batch.files,
           createdBy: telegramId,
         });
         await batchData.save();
 
         // Generate the shareable link
-        const shareLink = `https://t.me/PWSENSEI_FileStoreBot?start=${currentBatchId}`;
         bot.sendMessage(
           msg.chat.id,
-          `Batch saved successfully! Shareable link: ${shareLink}`
+          `Batch saved successfully! Shareable link: ${SHARE_BASE}${batch.id}`
         );
 
-        // Reset batch-related variables
-        isBatchActive = false;
-        batchFiles = [];
-        currentBatchId = null;
+        // Reset this user's batch
+        batches.delete(telegramId);
       } else {
         bot.sendMessage(
           msg.chat.id,
@@ -372,13 +318,8 @@ bot
     bot.onText(/\/users/, async (msg) => {
       const telegramId = msg.from.id;
 
-      // Check if the user is the owner
-      if (!isOwner(telegramId)) {
-        return bot.sendMessage(
-          msg.chat.id,
-          "Only the owner can use this command."
-        );
-      }
+      // Owner + admins only
+      if (!isStaff(telegramId)) return;
 
       // Fetch all users from the database
       const users = await UserModel.find();
