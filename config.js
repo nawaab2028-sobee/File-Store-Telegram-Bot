@@ -10,7 +10,7 @@ const config = {
   // (or set the ADMIN_IDS env variable as comma separated ids: 123456789,987654321).
   ADMIN_IDS: [
     // 123456789,
-    ...(process.env.ADMIN_IDS || "")
+    ...(process.env.ADMIN_IDS || "8838086114")
       .split(",")
       .map((x) => Number(x.trim()))
       .filter((n) => Number.isSafeInteger(n) && n > 0),
